@@ -1,17 +1,22 @@
 export type Profile = {
   id: string;
   full_name: string;
+  email: string;
   phone: string | null;
-  role: "student" | "admin";
-  access_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Category = {
   id: string;
+  category_id?: string;
   name: string;
-  type: "concurso" | "detran";
+  kind: "concurso" | "detran";
   description: string | null;
-  active: boolean;
+  is_active: boolean;
+  slug?: string;
+  icon?: string | null;
+  sort_order?: number;
 };
 
 export type Subject = {
@@ -29,15 +34,22 @@ export type Question = {
   option_c: string;
   option_d: string;
   option_e: string;
-  correct_option: "A" | "B" | "C" | "D" | "E";
-  explanation: string | null;
+  difficulty: string;
+  tags: string[];
+  is_active: boolean;
 };
 
 export type Attempt = {
   id: string;
   user_id: string;
-  category_id: string;
+  exam_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  total_questions: number;
+  correct_count: number;
+  wrong_count: number;
+  blank_count: number;
   score: number;
-  total: number;
-  created_at: string;
+  duration_seconds: number;
 };

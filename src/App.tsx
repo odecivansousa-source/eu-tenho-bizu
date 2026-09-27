@@ -67,7 +67,7 @@ function Layout({ children, profile }: { children: React.ReactNode; profile?: Pr
             <Link onClick={() => setOpen(false)} to="/app">Início</Link>
             <Link onClick={() => setOpen(false)} to="/simulados">Simulados</Link>
             <Link onClick={() => setOpen(false)} to="/desempenho">Desempenho</Link>
-            {profile.role === "admin" && <Link onClick={() => setOpen(false)} to="/admin">Admin</Link>}
+            <Link onClick={() => setOpen(false)} to="/admin">Admin</Link>
             <button className="nav-logout" onClick={logout}><LogOut size={17}/> Sair</button>
           </> : <>
             <Link to="/entrar">Entrar</Link>
@@ -146,19 +146,31 @@ function Auth({ mode, setProfile }: { mode: "login"|"signup"; setProfile: (p: Pr
 }
 
 function Protected({ profile, children, adminOnly=false }: { profile: Profile|null; children: React.ReactNode; adminOnly?:boolean }) {
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!profile) {
+      setIsAdmin(false);
+      return;
+    }
+    supabase.from("user_roles").select("role").eq("user_id", profile.id).eq("role", "admin").maybeSingle().then(({ data }) => {
+      if (mounted) setIsAdmin(Boolean(data));
+    });
+    return () => { mounted = false; };
+  }, [profile]);
+
   if (!profile) return <Navigate to="/entrar" replace />;
-  if (adminOnly && profile.role !== "admin") return <Navigate to="/app" replace />;
-  const expired = profile.access_expires_at && new Date(profile.access_expires_at) < new Date();
-  if (expired && !adminOnly) return <Layout profile={profile}><div className="empty-page"><Clock3/><h1>Acesso expirado</h1><p>Seu período de acesso terminou. Procure o administrador para renovar.</p></div></Layout>;
+  if (adminOnly && !isAdmin) return <Navigate to="/app" replace />;
   return <Layout profile={profile}>{children}</Layout>;
 }
 
 function Dashboard({profile}:{profile:Profile}) {
   const [categories,setCategories]=useState<any[]>([]);
-  useEffect(()=>{ supabase.from("categories").select("*").eq("active",true).order("type").then(({data})=>setCategories(data||[])); },[]);
-  const concursos=categories.filter(c=>c.type==="concurso"), detran=categories.filter(c=>c.type==="detran");
+  useEffect(()=>{ supabase.from("categories").select("*").eq("is_active",true).order("kind").then(({data})=>setCategories(data||[])); },[]);
+  const concursos=categories.filter(c=>c.kind==="concurso"), detran=categories.filter(c=>c.kind==="detran");
   return <div className="dashboard container">
-    <div className="welcome"><div><span className="eyebrow">ÁREA DO ALUNO</span><h1>Olá, {profile.full_name?.split(" ")[0] || "aluno"}.</h1><p>Escolha uma categoria e comece a praticar.</p></div><div className="access-card"><Clock3/><span>Acesso</span><strong>{profile.access_expires_at ? new Date(profile.access_expires_at).toLocaleDateString("pt-BR") : "Não definido"}</strong></div></div>
+    <div className="welcome"><div><span className="eyebrow">ÁREA DO ALUNO</span><h1>Olá, {profile.full_name?.split(" ")[0] || "aluno"}.</h1><p>Escolha uma categoria e comece a praticar.</p></div></div>
     <CategorySection title="Concursos" items={concursos} icon={<Shield/>} empty="Nenhum concurso cadastrado ainda." />
     <CategorySection title="DETRAN" items={detran} icon={<Car/>} empty="Nenhuma categoria do DETRAN cadastrada ainda." />
     {categories.length===0 && <div className="alert">O banco ainda não possui categorias. O administrador poderá cadastrá-las no painel.</div>}
@@ -173,8 +185,8 @@ function CategorySection({title,items,icon,empty}:{title:string;items:any[];icon
 
 function Exams() {
   const [categories,setCategories]=useState<any[]>([]);
-  useEffect(()=>{supabase.from("categories").select("*").eq("active",true).order("name").then(({data})=>setCategories(data||[]));},[]);
-  return <div className="container page"><span className="eyebrow">PRÁTICA</span><h1>Simulados</h1><p className="lead">Escolha uma categoria.</p><div className="category-grid">{categories.map(c=><Link className="category-card" to={`/simulado/${c.id}`} key={c.id}><span>{c.name}</span><small>{c.type==="detran"?"DETRAN":"CONCURSO"}</small><ChevronRight/></Link>)}</div></div>;
+  useEffect(()=>{supabase.from("categories").select("*").eq("is_active",true).order("name").then(({data})=>setCategories(data||[]));},[]);
+  return <div className="container page"><span className="eyebrow">PRÁTICA</span><h1>Simulados</h1><p className="lead">Escolha uma categoria.</p><div className="category-grid">{categories.map(c=><Link className="category-card" to={`/simulado/${c.id}`} key={c.id}><span>{c.name}</span><small>{c.kind==="detran"?"DETRAN":"CONCURSO"}</small><ChevronRight/></Link>)}</div></div>;
 }
 
 function Exam() {
@@ -199,13 +211,13 @@ function Result({score,total}:{score:number;total:number}) {
 function Performance(){ return <div className="container page"><span className="eyebrow">SEU DESEMPENHO</span><h1>Desempenho</h1><div className="muted-box">O histórico detalhado será exibido aqui conforme os simulados forem realizados.</div></div>; }
 
 function Admin(){
-  const [cats,setCats]=useState<any[]>([]); const [name,setName]=useState(""); const [type,setType]=useState<"concurso"|"detran">("concurso");
+  const [cats,setCats]=useState<any[]>([]); const [name,setName]=useState(""); const [kind,setKind]=useState<"concurso"|"detran">("concurso");
   async function refresh(){const {data}=await supabase.from("categories").select("*").order("name");setCats(data||[]);}
   useEffect(()=>{refresh()},[]);
-  async function add(){if(!name.trim())return; await supabase.from("categories").insert({name:name.trim(),type,active:true});setName("");refresh();}
+  async function add(){if(!name.trim())return; await supabase.from("categories").insert({name:name.trim(),kind,is_active:true});setName("");refresh();}
   return <div className="container page"><span className="eyebrow">ADMINISTRAÇÃO</span><h1>Painel administrativo</h1>
-    <div className="admin-form"><input placeholder="Nome da categoria" value={name} onChange={e=>setName(e.target.value)}/><select value={type} onChange={e=>setType(e.target.value as any)}><option value="concurso">Concurso</option><option value="detran">DETRAN</option></select><button className="btn primary" onClick={add}>Adicionar</button></div>
-    <div className="admin-list">{cats.map(c=><div className="admin-row" key={c.id}><span><strong>{c.name}</strong><small>{c.type}</small></span><span>{c.active?"Ativa":"Inativa"}</span></div>)}</div>
+    <div className="admin-form"><input placeholder="Nome da categoria" value={name} onChange={e=>setName(e.target.value)}/><select value={kind} onChange={e=>setKind(e.target.value as "concurso"|"detran")}><option value="concurso">Concurso</option><option value="detran">DETRAN</option></select><button className="btn primary" onClick={add}>Adicionar</button></div>
+    <div className="admin-list">{cats.map(c=><div className="admin-row" key={c.id}><span><strong>{c.name}</strong><small>{c.kind}</small></span><span>{c.is_active?"Ativa":"Inativa"}</span></div>)}</div>
   </div>;
 }
 
