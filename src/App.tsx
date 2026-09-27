@@ -54,7 +54,20 @@ function Splash() {
 
 function Layout({ children, profile }: { children: React.ReactNode; profile?: Profile | null }) {
   const [open, setOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    if (!profile) {
+      setIsAdmin(false);
+      return () => { mounted = false; };
+    }
+    supabase.from("user_roles").select("role").eq("user_id", profile.id).eq("role", "admin").maybeSingle()
+      .then(({ data }) => { if (mounted) setIsAdmin(Boolean(data)); });
+    return () => { mounted = false; };
+  }, [profile]);
+
   async function logout() { await supabase.auth.signOut(); navigate("/"); }
 
   return (
@@ -67,7 +80,7 @@ function Layout({ children, profile }: { children: React.ReactNode; profile?: Pr
             <Link onClick={() => setOpen(false)} to="/app">Início</Link>
             <Link onClick={() => setOpen(false)} to="/simulados">Simulados</Link>
             <Link onClick={() => setOpen(false)} to="/desempenho">Desempenho</Link>
-            <Link onClick={() => setOpen(false)} to="/admin">Admin</Link>
+            {isAdmin && <Link onClick={() => setOpen(false)} to="/admin">Admin</Link>}
             <button className="nav-logout" onClick={logout}><LogOut size={17}/> Sair</button>
           </> : <>
             <Link to="/entrar">Entrar</Link>
@@ -147,20 +160,31 @@ function Auth({ mode, setProfile }: { mode: "login"|"signup"; setProfile: (p: Pr
 
 function Protected({ profile, children, adminOnly=false }: { profile: Profile|null; children: React.ReactNode; adminOnly?:boolean }) {
   const [isAdmin, setIsAdmin] = useState(false);
+  const [checking, setChecking] = useState(adminOnly);
 
   useEffect(() => {
     let mounted = true;
     if (!profile) {
       setIsAdmin(false);
+      setChecking(false);
       return;
     }
+    if (!adminOnly) {
+      setChecking(false);
+      return;
+    }
+    setChecking(true);
     supabase.from("user_roles").select("role").eq("user_id", profile.id).eq("role", "admin").maybeSingle().then(({ data }) => {
-      if (mounted) setIsAdmin(Boolean(data));
+      if (mounted) {
+        setIsAdmin(Boolean(data));
+        setChecking(false);
+      }
     });
     return () => { mounted = false; };
-  }, [profile]);
+  }, [profile, adminOnly]);
 
   if (!profile) return <Navigate to="/entrar" replace />;
+  if (checking) return <Splash />;
   if (adminOnly && !isAdmin) return <Navigate to="/app" replace />;
   return <Layout profile={profile}>{children}</Layout>;
 }
@@ -191,13 +215,42 @@ function Exams() {
 
 function Exam() {
   const { pathname } = useLocation(); const categoryId = pathname.split("/").pop()!;
-  const [category,setCategory]=useState<any>(); const [questions,setQuestions]=useState<any[]>([]);
-  const [index,setIndex]=useState(0); const [answers,setAnswers]=useState<Record<string,string>>({}); const [done,setDone]=useState(false); const [score,setScore]=useState(0);
-  useEffect(()=>{ (async()=>{ const {data:c}=await supabase.from("categories").select("*").eq("id",categoryId).single(); setCategory(c); const {data:q}=await supabase.from("questions").select("*").limit(20); setQuestions(q||[]); })(); },[categoryId]);
-  if (!questions.length) return <div className="container page"><span className="eyebrow">SIMULADO</span><h1>{category?.name || "Carregando..."}</h1><div className="muted-box">Ainda não há questões cadastradas para este simulado.</div></div>;
+  const [category,setCategory]=useState<any>(); const [questions,setQuestions]=useState<any[]>([]); const [exam,setExam]=useState<any>();
+  const [index,setIndex]=useState(0); const [answers,setAnswers]=useState<Record<string,string>>({}); const [done,setDone]=useState(false); const [score,setScore]=useState(0); const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      const {data:c}=await supabase.from("categories").select("*").eq("id",categoryId).single();
+      setCategory(c);
+      const {data:e}=await supabase.from("exams").select("*").eq("category_id",categoryId).eq("is_active",true).order("created_at").limit(1).maybeSingle();
+      setExam(e);
+      const {data:subjects}=await supabase.from("subjects").select("id").eq("category_id",categoryId).eq("is_active",true);
+      const subjectIds=(subjects||[]).map((subject:any)=>subject.id);
+      if (!subjectIds.length) { setQuestions([]); setLoading(false); return; }
+      const {data:q}=await supabase.from("questions").select("*").in("subject_id",subjectIds).eq("is_active",true).limit(20);
+      const questionIds=(q||[]).map((question:any)=>question.id);
+      const {data:answersData}=questionIds.length ? await supabase.from("question_answers").select("question_id,correct_option").in("question_id",questionIds) : {data:[]};
+      const correctByQuestion=Object.fromEntries((answersData||[]).map((answer:any)=>[answer.question_id,answer.correct_option]));
+      setQuestions((q||[]).map((question:any)=>({...question,correct_option:correctByQuestion[question.id]})).filter((question:any)=>question.correct_option));
+      setLoading(false);
+    })();
+  },[categoryId]);
+
+  if (loading) return <div className="container page"><span className="eyebrow">SIMULADO</span><h1>{category?.name || "Carregando..."}</h1><div className="muted-box">Carregando questões...</div></div>;
+  if (!questions.length) return <div className="container page"><span className="eyebrow">SIMULADO</span><h1>{category?.name || "Simulado"}</h1><div className="muted-box">Ainda não há questões cadastradas para este simulado.</div></div>;
   if (done) return <Result score={score} total={questions.length}/>;
   const q=questions[index]; const options=[["A",q.option_a],["B",q.option_b],["C",q.option_c],["D",q.option_d],["E",q.option_e]];
-  function finish(){ const s=questions.reduce((n,x)=>n+(answers[x.id]===x.correct_option?1:0),0); setScore(s); setDone(true); }
+  async function finish(){
+    const s=questions.reduce((n,x)=>n+(answers[x.id]===x.correct_option?1:0),0);
+    setScore(s);
+    const {data:sessionData}=await supabase.auth.getSession();
+    if (sessionData.session && exam) {
+      const {data:attempt}=await supabase.from("attempts").insert({user_id:sessionData.session.user.id,exam_id:exam.id,status:"completed",finished_at:new Date().toISOString(),total_questions:questions.length,correct_count:s,wrong_count:questions.filter(x=>answers[x.id] && answers[x.id]!==x.correct_option).length,blank_count:questions.filter(x=>!answers[x.id]).length,score:questions.length ? (s/questions.length)*100 : 0}).select("id").single();
+      if (attempt) await supabase.from("attempt_answers").insert(questions.map((question:any)=>({attempt_id:attempt.id,question_id:question.id,selected_option:answers[question.id]||null,correct_option:question.correct_option,is_correct:answers[question.id]===question.correct_option,flagged:false})));
+    }
+    setDone(true);
+  }
   return <div className="container exam"><div className="exam-top"><div><span className="eyebrow">{category?.name}</span><h1>Questão {index+1} de {questions.length}</h1></div><div className="progress"><span style={{width:`${((index+1)/questions.length)*100}%`}}/></div></div>
     <div className="question-card"><p className="statement">{q.statement}</p><div className="options">{options.map(([letter,text])=><button key={letter} className={answers[q.id]===letter?"option selected":"option"} onClick={()=>setAnswers({...answers,[q.id]:letter})}><b>{letter}</b><span>{text}</span></button>)}</div>
       <div className="exam-actions">{index>0 && <button className="btn ghost" onClick={()=>setIndex(index-1)}>Anterior</button>}{index<questions.length-1 ? <button className="btn primary" onClick={()=>setIndex(index+1)}>Próxima</button> : <button className="btn primary" onClick={finish}>Finalizar</button>}</div>
@@ -208,7 +261,30 @@ function Result({score,total}:{score:number;total:number}) {
   return <div className="container result"><span className="eyebrow">RESULTADO</span><h1>Simulado finalizado.</h1><div className="result-number">{score}<small>/{total}</small></div><p>Você acertou {Math.round(score/total*100)}% das questões.</p><div className="hero-actions"><Link className="btn primary" to="/simulados">Novo simulado</Link><Link className="btn ghost" to="/app">Voltar à área</Link></div></div>;
 }
 
-function Performance(){ return <div className="container page"><span className="eyebrow">SEU DESEMPENHO</span><h1>Desempenho</h1><div className="muted-box">O histórico detalhado será exibido aqui conforme os simulados forem realizados.</div></div>; }
+function Performance(){
+  const [attempts,setAttempts]=useState<any[]>([]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    let mounted=true;
+    (async()=>{
+      const {data:sessionData}=await supabase.auth.getSession();
+      if (!sessionData.session) { setLoading(false); return; }
+      const {data}=await supabase.from("attempts").select("id,score,total_questions,correct_count,finished_at").eq("user_id",sessionData.session.user.id).order("finished_at",{ascending:false});
+      if (mounted) { setAttempts(data||[]); setLoading(false); }
+    })();
+    return ()=>{mounted=false;};
+  },[]);
+  const total=attempts.length;
+  const questions=attempts.reduce((sum,attempt)=>sum+(attempt.total_questions||0),0);
+  const correct=attempts.reduce((sum,attempt)=>sum+(attempt.correct_count||0),0);
+  const average=questions ? Math.round(correct/questions*100) : 0;
+  return <div className="container page"><span className="eyebrow">SEU DESEMPENHO</span><h1>Desempenho</h1>
+    {loading ? <div className="muted-box">Carregando seu histórico...</div> : total===0 ? <div className="muted-box">Você ainda não finalizou nenhum simulado.</div> : <>
+      <div className="feature-grid"><div className="feature"><h3>{total}</h3><p>Simulados concluídos</p></div><div className="feature"><h3>{average}%</h3><p>Média de acertos</p></div></div>
+      <section className="dash-section"><div className="dash-heading"><h2>Histórico recente</h2></div><div className="admin-list">{attempts.map(attempt=><div className="admin-row" key={attempt.id}><span><strong>{attempt.correct_count}/{attempt.total_questions} acertos</strong><small>{attempt.finished_at ? new Date(attempt.finished_at).toLocaleDateString("pt-BR") : "Finalizado"}</small></span><span>{Math.round(Number(attempt.score)||0)}%</span></div>)}</div></section>
+    </>}
+  </div>;
+}
 
 function Admin(){
   const [cats,setCats]=useState<any[]>([]); const [name,setName]=useState(""); const [kind,setKind]=useState<"concurso"|"detran">("concurso");
